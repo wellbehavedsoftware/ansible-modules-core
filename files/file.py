@@ -59,10 +59,12 @@ options:
         directories will be recursively deleted, and files or symlinks will be unlinked.
         If C(touch) (new in 1.4), an empty file will be created if the c(path) does not
         exist, while an existing file or directory will receive updated file access and
-        modification times (similar to the way `touch` works from the command line).
+        modification times (similar to the way `touch` works from the command line). If 
+        C(empty_directory), all files and subdirectories in the c(path) directory will
+        be deleted, leaving the directory untouched.
     required: false
     default: file
-    choices: [ file, link, directory, hard, touch, absent ]
+    choices: [ file, link, directory, hard, touch, absent, empty_directory ]
   src:
     required: false
     default: null
@@ -103,11 +105,26 @@ EXAMPLES = '''
 
 '''
 
+def empty_dir(module, path):
+    try:
+        path.rstrip('/')
+        #for every entry in the specified directory
+        for entry in os.listdir(path):
+            #if the entry is a directory, we empty it and then remove it
+            if os.path.isdir(path + '/' + entry):
+                empty_dir(module, path + '/' + entry)
+                os.rmdir(path + '/' + entry)
+            #if the entry is not a directory, we remove it
+            else:
+                os.remove(path + '/' + entry)
+    except OSError, e:
+        module.fail_json(path=path, msg='Error while deleting files: %s' % str(e))
+
 def main():
 
     module = AnsibleModule(
         argument_spec = dict(
-            state = dict(choices=['file','directory','link','hard','touch','absent'], default=None),
+            state = dict(choices=['file','directory','link','hard','touch','absent', 'empty_directory'], default=None),
             path  = dict(aliases=['dest', 'name'], required=True),
             original_basename = dict(required=False), # Internal use only, for recursive ops
             recurse  = dict(default='no', type='bool'),
@@ -351,6 +368,18 @@ def main():
                 raise e
 
         module.exit_json(dest=path, changed=True)
+
+    elif state == 'empty_directory':
+        #If the path is not a directory we call fail_json(). Else, we empty it.
+        if prev_state != 'directory':
+            module.fail_json(msg='The specified path is not a directory or does not exist')
+        else:
+            #if the directory is empty, we exit
+            if os.listdir(path) == []: 
+                module.exit_json(path=path, changed=False)
+            else: 
+                empty_dir(module, path)
+                module.exit_json(path=path, changed=True)
 
     module.fail_json(path=path, msg='unexpected position reached')
 
