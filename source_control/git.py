@@ -646,6 +646,7 @@ def main():
             module.exit_json(changed=True, before=before, after=remote_head)
         # there's no git config, so clone
         clone(git_path, module, repo, dest, remote, depth, version, bare, reference, recursive)
+        repo_updated = True
     elif not update:
         # Just return having found a repo already in the dest path
         # this does no checking that the repo is the actual repo
@@ -687,6 +688,7 @@ def main():
         switch_version(git_path, module, dest, remote, version, recursive, track_submodules)
 
     # Deal with submodules
+    submodules_updated = False
     if recursive and not bare:
         submodules_updated = submodules_fetch(git_path, module, remote, track_submodules, dest)
 
@@ -706,7 +708,7 @@ def main():
     changed = False
     if before != after or local_mods:
         changed = True
-    elif recursive and submodules_updated:
+    elif submodules_updated:
         changed =True
 
     # cleanup the wrapper script
