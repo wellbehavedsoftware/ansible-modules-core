@@ -56,8 +56,22 @@ options:
     choices: [ 'A', 'CNAME', 'MX', 'AAAA', 'TXT', 'PTR', 'SRV', 'SPF', 'NS' ]
   value:
     description:
-      - The new value when creating a DNS record.  Multiple comma-spaced values are allowed.  When deleting a record all values for the record must be specified or Route53 will not delete it.
+      - The new value when creating a DNS record.  Multiple comma-spaced values are allowed for non-alias records.  When deleting a record all values for the record must be specified or Route53 will not delete it.
     required: false
+    default: null
+    aliases: []
+  alias:
+    description:
+        Indicates if this is an alias record.
+    required: false
+    version_added: 1.8
+    default: False
+    aliases: []
+    alias_hosted_zone_id:
+    description:
+        The hosted zone identifier.
+    required: false
+    version_added: 1.8
     default: null
     aliases: []
   aws_secret_key:
@@ -135,7 +149,19 @@ EXAMPLES = '''
       type: "TXT"
       ttl: "7200"
       value: '"bar"'
-
+# Create a new hosted zone:
+- route53:
+      command: "create_hosted_zone"
+      zone: "foo.com"
+# Add an alias record that points to an Amazon ELB:
+- route53: 
+      command=create
+      zone=foo.com
+      record=elb.foo.com
+      type=A
+      value="{{ elb_dns_name }}"
+      alias=yes
+      alias_hosted_zone_id="{{ elb_zone_id }}"
 
 '''
 
@@ -146,6 +172,7 @@ try:
     import boto
     from boto import route53
     from boto.route53.record import ResourceRecordSets
+    from boto.route53.connection import Route53Connection
 except ImportError:
     print "failed=True msg='boto required for this module'"
     sys.exit(1)
@@ -174,6 +201,8 @@ def main():
             type            = dict(choices=['A', 'CNAME', 'MX', 'AAAA', 'TXT', 'PTR', 'SRV', 'SPF', 'NS'], required=True),
             value           = dict(required=False), 
             overwrite       = dict(required=False, type='bool'),
+            alias           = dict(required=False, type='bool'),
+            alias_hosted_zone_id = dict(required=False),
             retry_interval  = dict(required=False, default=500)
         )
     )
@@ -185,9 +214,18 @@ def main():
     record_in             = module.params.get('record')
     type_in               = module.params.get('type')
     value_in              = module.params.get('value')
+    alias_hosted_zone_id_in = module.params.get('alias_hosted_zone_id')
     retry_interval_in     = module.params.get('retry_interval')
 
     ec2_url, aws_access_key, aws_secret_key, region = get_ec2_creds(module)
+
+    if command_in == 'create_hosted_zone':
+        route53 = Route53Connection(aws_access_key, aws_secret_key)
+        response = route53.create_hosted_zone(zone_in)
+        if response is None:
+            module.fail_json(msg = "unable to create the specified hosted zone")
+        else:
+            module.exit_json(changed=True)
 
     value_list = ()
 
@@ -206,6 +244,11 @@ def main():
     if command_in == 'create' or command_in == 'delete':
         if not value_in:
             module.fail_json(msg = "parameter 'value' required for create/delete")
+        elif module.params['alias']:
+            if len(value_list) != 1:
+                module.fail_json(msg = "parameter 'value' must contain a single dns name for alias create/delete")
+            elif not alias_hosted_zone_id_in:
+                module.fail_json(msg = "parameter 'alias_hosted_zone_id' required for alias create/delete")
 
     # connect to the route53 endpoint 
     try:
@@ -241,8 +284,15 @@ def main():
             record['type'] = rset.type
             record['record'] = decoded_name
             record['ttl'] = rset.ttl
-            record['value'] = ','.join(sorted(rset.resource_records))
-            record['values'] = sorted(rset.resource_records)
+            if rset.alias_dns_name:
+                record['alias'] = True
+                record['value'] = rset.alias_dns_name
+                record['values'] = [rset.alias_dns_name]
+                record['alias_hosted_zone_id'] = rset.alias_hosted_zone_id
+            else:
+                record['alias'] = False
+                record['value'] = ','.join(sorted(rset.resource_records))
+                record['values'] = sorted(rset.resource_records)
             if value_list == sorted(rset.resource_records) and int(record['ttl']) == ttl_in and command_in == 'create':
                 module.exit_json(changed=False)
 
@@ -260,12 +310,18 @@ def main():
         else:
             change = changes.add_change("DELETE", record_in, type_in, record['ttl'])
         for v in record['values']:
-            change.add_value(v)
+            if record['alias']:
+                change.set_alias(record['alias_hosted_zone_id'], v)
+            else:
+                change.add_value(v)
 
     if command_in == 'create' or command_in == 'delete':
         change = changes.add_change(command_in.upper(), record_in, type_in, ttl_in)
         for v in value_list:
-            change.add_value(v)
+            if module.params['alias']:
+                change.set_alias(alias_hosted_zone_id_in, v)
+            else:
+                change.add_value(v)
 
     try:
         result = commit(changes, retry_interval_in)
